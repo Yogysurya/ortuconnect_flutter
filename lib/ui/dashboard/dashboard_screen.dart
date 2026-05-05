@@ -8,7 +8,7 @@ import '../../core/session_manager.dart';
 import '../../core/notification_service.dart';
 
 class DashboardScreen extends StatefulWidget {
-  const DashboardScreen({Key? key}) : super(key: key);
+  const DashboardScreen({super.key});
 
   @override
   State<DashboardScreen> createState() => _DashboardScreenState();
@@ -50,20 +50,36 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       _loadFromSession();
-      // Cek perubahan status izin dan agenda saat app dibuka kembali
       if (_username.isNotEmpty) {
         NotificationService().checkAll(_username);
+        if (_idSiswa.isNotEmpty) {
+          NotificationService().checkAbsensiHariIni(_idSiswa, _namaSiswa);
+          NotificationService().checkRekapMingguan(_idSiswa, _namaSiswa);
+        }
       }
     }
   }
 
   Future<void> _loadFromSession() async {
+    if (mounted) setState(() => _isLoading = true);
+
     final prefs = await SharedPreferences.getInstance();
     _username = prefs.getString('username') ?? '';
     _idSiswa = prefs.getString('id_siswa') ?? '';
     _genderIcon = prefs.getString('profile_gender_icon') ?? 'cowo';
 
-    if (_username.isEmpty) { _logout(); return; }
+    // Debug: tampilkan FCM token di console
+    final fcmToken = prefs.getString('fcm_token') ?? '';
+    if (fcmToken.isNotEmpty) {
+      debugPrint('=== FCM TOKEN ===');
+      debugPrint(fcmToken);
+      debugPrint('================');
+    }
+
+    if (_username.isEmpty) {
+      _logout();
+      return;
+    }
 
     if (_idSiswa.isEmpty) {
       await _loadProfileFirst();
@@ -74,7 +90,8 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
 
   Future<void> _loadProfileFirst() async {
     try {
-      final response = await http.get(Uri.parse('$_apiProfile$_username'))
+      final response = await http
+          .get(Uri.parse('$_apiProfile$_username'))
           .timeout(const Duration(seconds: 15));
       final data = jsonDecode(response.body) as Map<String, dynamic>;
 
@@ -86,8 +103,11 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
         final gender = profileData['gender']?.toString().toLowerCase() ?? '';
         _genderIcon = gender.contains('perempuan') ? 'cewe' : 'cowo';
         await prefs.setString('profile_gender_icon', _genderIcon);
-        if (_idSiswa.isNotEmpty) await _loadDashboard();
-        else _setError('ID Siswa tidak ditemukan di profil');
+        if (_idSiswa.isNotEmpty) {
+          await _loadDashboard();
+        } else {
+          _setError('ID Siswa tidak ditemukan di profil');
+        }
       } else {
         _setError('Profil tidak aktif atau tidak ditemukan');
         _logout();
@@ -99,14 +119,21 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
 
   Future<void> _loadDashboard() async {
     try {
-      final response = await http.get(Uri.parse('$_apiDashboard$_idSiswa'))
+      final response = await http
+          .get(Uri.parse('$_apiDashboard$_idSiswa'))
           .timeout(const Duration(seconds: 15));
-      if (response.statusCode != 200) { _setError('Server Error (${response.statusCode})'); return; }
+      if (response.statusCode != 200) {
+        _setError('Server Error (${response.statusCode})');
+        return;
+      }
 
       final res = jsonDecode(response.body) as Map<String, dynamic>;
-      if (res['status'] != 'success') { _setError(res['message']?.toString() ?? 'Gagal mengambil data'); return; }
+      if (res['status'] != 'success') {
+        _setError(res['message']?.toString() ?? 'Gagal mengambil data');
+        return;
+      }
 
-      if (res.containsKey('profil')) {
+      if (res['profil'] is Map) {
         final p = res['profil'] as Map<String, dynamic>;
         _namaSiswa = p['nama_siswa']?.toString() ?? 'Nama tidak tersedia';
         _kelas = p['kelas']?.toString() ?? 'Kelas tidak tersedia';
@@ -114,14 +141,25 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
 
       _parseAgenda(res);
 
-      if (res.containsKey('kehadiran_minggu_ini')) {
+      if (res.containsKey('kehadiran_minggu_ini') && res['kehadiran_minggu_ini'] is Map) {
         final k = res['kehadiran_minggu_ini'] as Map<String, dynamic>;
         _kehadiranStatus = 'Hadir: ${k['hadir'] ?? '0'}/${k['total_hari'] ?? '5'} hari';
       }
 
       _parseIzin(res);
 
-      if (mounted) setState(() { _isLoading = false; _errorMessage = null; });
+      // Cek absensi hari ini setelah data profil tersedia
+      if (_idSiswa.isNotEmpty && _namaSiswa.isNotEmpty) {
+        NotificationService().checkAbsensiHariIni(_idSiswa, _namaSiswa);
+        NotificationService().checkRekapMingguan(_idSiswa, _namaSiswa);
+      }
+
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _errorMessage = null;
+        });
+      }
     } catch (e) {
       _setError('Gagal memuat dashboard: $e');
     }
@@ -130,8 +168,18 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
   void _parseAgenda(Map<String, dynamic> res) {
     _agendaTitle = 'Tidak ada agenda/pengumuman';
     _agendaDate = '';
-    if (!res.containsKey('agenda')) return;
-    final agendaList = res['agenda'] as List<dynamic>;
+    if (!res.containsKey('agenda') || res['agenda'] == null) return;
+
+    // API bisa mengembalikan List atau Map — normalise ke List
+    final raw = res['agenda'];
+    List<dynamic> agendaList;
+    if (raw is List) {
+      agendaList = raw;
+    } else if (raw is Map) {
+      agendaList = raw.values.toList();
+    } else {
+      return;
+    }
     if (agendaList.isEmpty) return;
 
     final now = DateTime.now();
@@ -139,7 +187,8 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     Duration? closestDiff;
 
     for (final item in agendaList) {
-      final agenda = item as Map<String, dynamic>;
+      if (item is! Map<String, dynamic>) continue;
+      final agenda = item;
       final dateStr = agenda['tanggal']?.toString() ?? '';
       if (dateStr.isEmpty) continue;
       final agendaTime = _parseDate(dateStr);
@@ -169,7 +218,8 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     if (rawIzin is Map<String, dynamic>) {
       latestIzin = rawIzin;
     } else if (rawIzin is List && rawIzin.isNotEmpty) {
-      latestIzin = rawIzin.first;
+      final first = rawIzin.first;
+      if (first is Map<String, dynamic>) latestIzin = first;
     }
 
     if (latestIzin != null) {
@@ -187,8 +237,10 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
 
   DateTime? _parseDate(String dateStr) {
     final formats = ['yyyy-MM-dd HH:mm:ss', 'yyyy-MM-dd', 'dd-MM-yyyy'];
-    for (var f in formats) {
-      try { return DateFormat(f).parse(dateStr); } catch (_) {}
+    for (final f in formats) {
+      try {
+        return DateFormat(f).parse(dateStr);
+      } catch (_) {}
     }
     return null;
   }
@@ -197,11 +249,18 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     try {
       final date = DateFormat('yyyy-MM-dd').parse(tanggal.trim());
       return DateFormat('dd MMMM yyyy', 'id_ID').format(date);
-    } catch (_) { return tanggal; }
+    } catch (_) {
+      return tanggal;
+    }
   }
 
   void _setError(String msg) {
-    if (mounted) setState(() { _isLoading = false; _errorMessage = msg; });
+    if (mounted) {
+      setState(() {
+        _isLoading = false;
+        _errorMessage = msg;
+      });
+    }
   }
 
   Future<void> _logout() async {
@@ -214,7 +273,6 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
   }
 
   Future<void> _refreshDatabase() async {
-    setState(() => _isLoading = true);
     await _loadFromSession();
   }
 
@@ -235,7 +293,6 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Header — tanpa tombol logout
             const Padding(
               padding: EdgeInsets.fromLTRB(24, 22, 24, 8),
               child: Text(
@@ -276,8 +333,15 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
             children: [
               const Icon(Icons.info_outline, color: Colors.white70, size: 48),
               const SizedBox(height: 16),
-              Text(_errorMessage!, style: const TextStyle(color: Colors.white70), textAlign: TextAlign.center),
-              TextButton(onPressed: _refreshDatabase, child: const Text('Coba Lagi', style: TextStyle(color: Colors.white))),
+              Text(
+                _errorMessage!,
+                style: const TextStyle(color: Colors.white70),
+                textAlign: TextAlign.center,
+              ),
+              TextButton(
+                onPressed: _refreshDatabase,
+                child: const Text('Coba Lagi', style: TextStyle(color: Colors.white)),
+              ),
             ],
           ),
         ),
@@ -312,7 +376,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
         borderRadius: BorderRadius.circular(24),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.18),
+            color: Colors.black.withValues(alpha: 0.18),
             blurRadius: 16,
             offset: const Offset(0, 6),
           ),
@@ -376,7 +440,10 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
           ),
           if (_agendaDate.isNotEmpty) ...[
             const SizedBox(height: 3),
-            Text(_agendaDate, style: const TextStyle(color: Color(0xFF0F53BF), fontSize: 13)),
+            Text(
+              _agendaDate,
+              style: const TextStyle(color: Color(0xFF0F53BF), fontSize: 13),
+            ),
           ],
         ],
       ),
@@ -425,7 +492,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
         borderRadius: BorderRadius.circular(24),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.13),
+            color: Colors.black.withValues(alpha: 0.13),
             blurRadius: 16,
             offset: const Offset(0, 6),
           ),

@@ -2,17 +2,17 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import '../../core/session_manager.dart';
+import '../../core/notification_service.dart';
 import '../main/main_screen.dart';
 
 class LoginScreen extends StatefulWidget {
-  const LoginScreen({Key? key}) : super(key: key);
+  const LoginScreen({super.key});
 
   @override
   State<LoginScreen> createState() => _LoginScreenState();
 }
 
-class _LoginScreenState extends State<LoginScreen>
-    with TickerProviderStateMixin {
+class _LoginScreenState extends State<LoginScreen> with TickerProviderStateMixin {
   final TextEditingController _usernameController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
 
@@ -22,7 +22,6 @@ class _LoginScreenState extends State<LoginScreen>
   bool _isLoading = false;
   bool _passwordVisible = false;
 
-  // Animation controllers
   late final AnimationController _fadeController;
   late final AnimationController _slideController;
   late final AnimationController _bgController;
@@ -106,12 +105,19 @@ class _LoginScreenState extends State<LoginScreen>
           user['id_akun'].toString(),
           user['role'].toString(),
         );
+
+        // Kirim FCM token ke server setelah login berhasil
+        final fcmToken = await NotificationService().getFcmToken();
+        if (fcmToken != null && fcmToken.isNotEmpty) {
+          _sendFcmTokenToServer(username, fcmToken);
+        }
+
         if (!mounted) return;
         Navigator.pushReplacement(
           context,
           PageRouteBuilder(
-            pageBuilder: (_, __, ___) => const MainScreen(),
-            transitionsBuilder: (_, anim, __, child) =>
+            pageBuilder: (context, animation, secondaryAnimation) => const MainScreen(),
+            transitionsBuilder: (context, anim, secondaryAnimation, child) =>
                 FadeTransition(opacity: anim, child: child),
             transitionDuration: const Duration(milliseconds: 500),
           ),
@@ -128,6 +134,19 @@ class _LoginScreenState extends State<LoginScreen>
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
+  }
+
+  // Kirim FCM token ke server (fire and forget, tidak perlu tunggu)
+  void _sendFcmTokenToServer(String username, String fcmToken) {
+    http.post(
+      Uri.parse('https://ortuconnect.pbltifnganjuk.com/api/save_fcm_token.php'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'username': username, 'fcm_token': fcmToken}),
+    ).timeout(const Duration(seconds: 10)).then((response) {
+      debugPrint('FCM token sent: ${response.body}');
+    }).catchError((e) {
+      debugPrint('FCM token send failed: $e');
+    });
   }
 
   void _showToast(String message) {
@@ -168,10 +187,7 @@ class _LoginScreenState extends State<LoginScreen>
         },
         child: Stack(
           children: [
-            // Dekoratif lingkaran background
             _buildDecorativeCircles(),
-
-            // Konten utama
             SafeArea(
               child: Center(
                 child: SingleChildScrollView(
@@ -195,34 +211,30 @@ class _LoginScreenState extends State<LoginScreen>
   Widget _buildDecorativeCircles() {
     return AnimatedBuilder(
       animation: _bgAnim,
-      builder: (context, _) {
+      builder: (context, child) {
         final size = MediaQuery.of(context).size;
         final t = _bgAnim.value;
         return Stack(
           children: [
-            // Orb besar kiri atas — sangat soft
             Positioned(
               top: -size.height * 0.12 + (t * 18),
               left: -size.width * 0.18,
-              child: _softOrb(size.width * 0.72, Colors.white.withOpacity(0.06)),
+              child: _softOrb(size.width * 0.72, Colors.white.withValues(alpha: 0.06)),
             ),
-            // Orb besar kanan bawah
             Positioned(
               bottom: -size.height * 0.1 - (t * 14),
               right: -size.width * 0.2,
-              child: _softOrb(size.width * 0.78, Colors.white.withOpacity(0.05)),
+              child: _softOrb(size.width * 0.78, Colors.white.withValues(alpha: 0.05)),
             ),
-            // Orb sedang kanan atas
             Positioned(
               top: size.height * 0.06 - (t * 12),
               right: -size.width * 0.1,
-              child: _softOrb(size.width * 0.45, Colors.white.withOpacity(0.07)),
+              child: _softOrb(size.width * 0.45, Colors.white.withValues(alpha: 0.07)),
             ),
-            // Orb sedang kiri bawah
             Positioned(
               bottom: size.height * 0.18 + (t * 10),
               left: -size.width * 0.12,
-              child: _softOrb(size.width * 0.42, Colors.white.withOpacity(0.06)),
+              child: _softOrb(size.width * 0.42, Colors.white.withValues(alpha: 0.06)),
             ),
           ],
         );
@@ -248,16 +260,16 @@ class _LoginScreenState extends State<LoginScreen>
     return Container(
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(28),
-        color: Colors.white.withOpacity(0.95),
+        color: Colors.white.withValues(alpha: 0.95),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.25),
+            color: Colors.black.withValues(alpha: 0.25),
             blurRadius: 40,
             spreadRadius: 0,
             offset: const Offset(0, 16),
           ),
           BoxShadow(
-            color: const Color(0xFF53BBF7).withOpacity(0.15),
+            color: const Color(0xFF53BBF7).withValues(alpha: 0.15),
             blurRadius: 60,
             spreadRadius: 0,
             offset: const Offset(0, 4),
@@ -269,7 +281,6 @@ class _LoginScreenState extends State<LoginScreen>
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            // Header card dengan gradient tipis
             Container(
               width: double.infinity,
               padding: const EdgeInsets.only(top: 32, bottom: 20),
@@ -280,34 +291,23 @@ class _LoginScreenState extends State<LoginScreen>
                   colors: [Color(0xFFF3F8FF), Color(0xFFF8F0FF)],
                 ),
               ),
-              child: Column(
-                children: [
-                  // Logo
-                  Image.asset(
-                    'assets/images/logo_ortuconnect.png',
-                    height: 161,
-                  ),
-                ],
+              child: Image.asset(
+                'assets/images/logo_ortuconnect.png',
+                height: 161,
               ),
             ),
-
-            // Form area
             Padding(
               padding: const EdgeInsets.fromLTRB(24, 20, 24, 28),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   const SizedBox(height: 24),
-
-                  // Field Username
                   _buildTextField(
                     controller: _usernameController,
                     hint: 'Nomor Siswa',
                     icon: Icons.person_outline_rounded,
                   ),
                   const SizedBox(height: 14),
-
-                  // Field Password
                   _buildTextField(
                     controller: _passwordController,
                     hint: 'Kata Sandi',
@@ -315,8 +315,6 @@ class _LoginScreenState extends State<LoginScreen>
                     isPassword: true,
                   ),
                   const SizedBox(height: 28),
-
-                  // Tombol Masuk
                   _buildLoginButton(),
                 ],
               ),
@@ -387,7 +385,7 @@ class _LoginScreenState extends State<LoginScreen>
             ? []
             : [
                 BoxShadow(
-                  color: const Color(0xFF53BBF7).withOpacity(0.45),
+                  color: const Color(0xFF53BBF7).withValues(alpha: 0.45),
                   blurRadius: 20,
                   offset: const Offset(0, 8),
                 ),

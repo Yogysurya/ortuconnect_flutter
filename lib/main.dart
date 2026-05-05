@@ -1,19 +1,21 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:intl/date_symbol_data_local.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'core/notification_service.dart';
 import 'ui/splash/splash_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await initializeDateFormatting('id_ID', null);
+  await Firebase.initializeApp();
   await NotificationService().init();
 
   runApp(const OrtuConnectApp());
 }
 
 class OrtuConnectApp extends StatelessWidget {
-  const OrtuConnectApp({Key? key}) : super(key: key);
+  const OrtuConnectApp({super.key});
 
   @override
   Widget build(BuildContext context) {
